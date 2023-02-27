@@ -1,0 +1,22 @@
+{
+  "memory": 512,
+  "ttl": 60,
+  "timeout": 30,
+  "minReplicas": 2,
+  "maxReplicas": 10,
+  "workers": 4,
+  "routes": {
+    "createOrderSchema": {
+      "path": "/_v/vtexasia.connector-pinelabs/v1/createOrderSchema",
+      "public": true
+    },
+    "paymentStatus": {
+      "path": "/_v/vtexasia.connector-pinelabs/v1/paymentStatus",
+      "public": true
+    },
+    "paymentWebhook": {
+      "path": "/_v/vtexasia.connector-pinelabs/v1/paymentWebhook",
+      "public": true
+    }
+  }
+}

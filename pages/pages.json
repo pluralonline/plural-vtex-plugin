@@ -1,0 +1,7 @@
+{
+  "extensions": {
+    "checkout/transactions/connector-pinelabs": {
+      "component": "index"
+    }
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "extends": "@vtex/tsconfig",
+  "compilerOptions": {
+    "types": ["node", "jquery"],
+    "noEmitOnError": false,
+    "lib": ["dom"],
+    "module": "esnext",
+    "moduleResolution": "node",
+    "target": "es2017"
+  },
+  "include": ["./typings/*.d.ts", "./**/*.tsx", "./**/*.ts", "Admin/ConsentList.js"]
+}
