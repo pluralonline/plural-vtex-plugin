@@ -60,7 +60,7 @@ export default class PinelabsApp extends Component<Props> {
   }
 
   handleOnLoad = async () => {
-    debugger
+   // debugger
     let parsedPayload = JSON.parse(this.props.appPayload);
 
     const options = {
@@ -87,8 +87,8 @@ export default class PinelabsApp extends Component<Props> {
         callbackUrl: parsedPayload.data.callbackUrl,
       })
       .then((res) => {
-        console.log({res})
-        debugger
+        //console.log({res})
+        //debugger
         if(res.data.data.status  === "ORDER_ATTEMPTED"){
           return
         }
