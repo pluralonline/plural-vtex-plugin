@@ -1,16 +1,14 @@
 import { MasterData } from "@vtex/api";
 import { RefundRequest } from "@vtex/payment-provider";
 import axios from "axios";
-import { buildOrderHeader } from "../builders/orderBuilder";
-import {
-  buildRefundHeader,
-  createRefundBuilder
-} from "../builders/refundBuilder";
+//import { buildOrderHeader } from "../builders/orderBuilder";
+//import {buildRefundHeader,createRefundBuilder} from "../builders/refundBuilder";
 import { addLog } from "../masterdata/logs";
 import { getOrderDocument } from "../masterdata/orderSchema";
 import { constants } from "../utils/constant";
-import { hash } from "../utils/hash";
-import { updateRefundStatus } from "./vtex";
+//import { hash } from "../utils/hash";
+import { updateRefundStatus } from "./vtex"; 
+
 
 export async function createOrderPinelabs(
   baseUrl:string,
@@ -48,100 +46,298 @@ export async function createOrderPinelabs(
   return response;
 }
 
+
+
+export async function createOrderPinelabsNew(
+  baseUrl: string,
+  payload: any,
+  token: string
+): Promise<{
+  isError: boolean;
+  data: any;
+}> {
+  console.log({ baseUrl });
+
+  // Validate required fields
+  if (!payload.merchant_order_reference) {
+    return {
+      isError: true,
+      data: {
+        error_code: "INVALID_REQUEST",
+        error_message: "Merchant Order Reference Id is missing"
+      }
+    };
+  }
+
+  // Fix country code if needed
+  if (payload.purchase_details?.customer?.shipping_address?.country === 'IND') {
+    payload.purchase_details.customer.shipping_address.country = 'IN';
+  }
+
+  const inboundAPI = axios.create({
+    baseURL: baseUrl,
+    timeout: 15000,
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json'
+    },
+  });
+
+  try {
+    const response = await inboundAPI.post("/api/checkout/v1/orders", payload);
+    console.log("Pinelabs Create Order - Response -> ", response.data);
+    
+    return {
+      isError: false,
+      data: response.data,
+    };
+  } catch (error) {
+    console.log("Pinelabs Create Order - Error -> ", 
+      axios.isAxiosError(error) ? JSON.stringify(error.response?.data) : error);
+    
+    return {
+      isError: true,
+      data: axios.isAxiosError(error) ? error.response?.data : { 
+        error_code: "API_ERROR",
+        error_message: error instanceof Error ? error.message : 'Unknown error' 
+      },
+    };
+  }
+}
+
+export async function getAccessTokenPinelabs(
+  baseUrl: string,
+  clientId: string,
+  clientSecret: string
+): Promise<{ isError: boolean; data: any }> {
+  const url = `${baseUrl}/api/auth/v1/token`;
+
+  const payload = {
+    client_id: clientId,
+    client_secret: clientSecret,
+    grant_type: 'client_credentials',
+  };
+
+  try {
+    const response = await axios.post(url, payload, {
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      timeout: 10000,
+    });
+
+    console.log('Pinelabs Access Token - Response ->', JSON.stringify(response.data, null, 2));
+    
+    return {
+      isError: false,
+      data: response.data, // includes access_token, expires_at, etc.
+    };
+  } catch (error) {
+    const errorData = axios.isAxiosError(error) 
+      ? error.response?.data 
+      : error instanceof Error 
+        ? error.message 
+        : 'Unknown error';
+    
+    console.log('Pinelabs Access Token - Error ->', JSON.stringify(errorData, null, 2));
+    
+    return {
+      isError: true,
+      data: errorData,
+    };
+  }
+}
+
+
+export function buildNewOrderPayloadFromLegacyData(legacyPayload: any): any {
+  const {
+    merchant_data,
+    payment_info_data,
+    customer_data,
+    billing_address_data,
+    shipping_address_data,
+    product_info_data,
+    additional_info_data,
+  } = legacyPayload;
+
+  const newPayload: any = {
+    merchant_order_reference: merchant_data?.merchant_order_id ?? `ORD_${Date.now()}`,
+    order_amount: {
+      value: payment_info_data?.amount ?? 0,
+      currency: payment_info_data?.currency_code ?? 'INR',
+    },
+    callback_url: merchant_data?.merchant_return_url,
+    integration_mode: 'IFRAME',
+    pre_auth: false,
+    purchase_details: {
+      customer: {
+        email_id: customer_data?.email_id ?? '',
+        first_name: billing_address_data?.first_name ?? '',
+        last_name: billing_address_data?.last_name ?? '',
+        mobile_number: customer_data?.mobile_number ? '91' + customer_data.mobile_number : '',
+        billing_address: {
+          address1: billing_address_data?.address1 ?? '',
+          pincode: billing_address_data?.pin_code ?? '',
+          city: billing_address_data?.city ?? '',
+          state: billing_address_data?.state ?? '',
+          country: 'IN', // Assuming fixed
+        },
+        shipping_address: {
+          address1: shipping_address_data?.address1 ?? '',
+          pincode: shipping_address_data?.pin_code ?? '',
+          city: shipping_address_data?.city ?? '',
+          state: shipping_address_data?.state ?? '',
+          country: shipping_address_data?.country ?? 'IN',
+        },
+      },
+      products: product_info_data?.product_details?.map((product: any) => ({
+        product_code: product?.product_code ?? 'DEFAULT',
+        product_amount: {
+          value: product?.product_amount ?? 0,
+          currency: payment_info_data?.currency_code ?? 'INR',
+        },
+      })) ?? [],
+    },
+  };
+
+  // Optional: Add discount if present in additional_info_data
+  if (additional_info_data?.rfu1) {
+    newPayload.purchase_details.cart_coupon_discount_amount = {
+      value: parseInt(additional_info_data.rfu1, 10),
+      currency: payment_info_data?.currency_code ?? 'INR',
+    };
+  }
+
+  return newPayload;
+}
+
 export async function getPluralPaymentById(
   pluralOrderId: string,
   pluralPaymentId: string,
   keys: any
 ) {
-  const baseUrl = keys.baseUrl
-  const inboundAPI = axios.create({
-    baseURL: baseUrl ?? constants.PLURAL.BASE_URL_PROD,
-    timeout: 15000,
-  });
+  const orderResponse = await getPluralOrderDetails(pluralOrderId, keys);
+  
+  if (orderResponse.isError) {
+    return orderResponse;
+  }
 
-  const headers = await buildOrderHeader(keys);
+  const payment = orderResponse.data.payments?.find(
+    (p: any) => p.id === pluralPaymentId
+  );
 
-  const response: any = await inboundAPI
-    .get(`/api/v1/inquiry/order/${pluralOrderId}/payment/${pluralPaymentId}`, {
-      headers,
-    })
-    .then((response) => {
-      console.log(
-        "Pinelabs Payment Details By Payment Id - Response -> ",
-        response.data
-      );
-      return {
-        isError: false,
-        data: response.data,
-      };
-    })
-    .catch((error) => {
-      console.log(
-        "Pinelabs Payment Details By Payment Id - Error -> ",
-        error.response
-      );
-      return {
-        isError: true,
-        data: error.response,
-      };
-    });
+  if (!payment) {
+    console.log(`Payment ${pluralPaymentId} not found in order ${pluralOrderId}`);
+    return {
+      isError: true,
+      data: {
+        error_code: "PAYMENT_NOT_FOUND",
+        error_message: `Payment ${pluralPaymentId} not found in order ${pluralOrderId}`
+      }
+    };
+  }
 
-  return response;
+  return {
+    isError: false,
+    data: {
+      ...orderResponse.data,
+      payment_data: payment
+    }
+  };
 }
 
 export async function getPluralPaymentByOrderId(
   pluralOrderId: string,
   keys: any
 ) {
-  const baseUrl = keys.baseUrl ?? constants.PLURAL.BASE_URL_PROD
-  const headers = await buildOrderHeader(keys);
-  const response = await axios.get(`${baseUrl}/api/v1/inquiry/order/${pluralOrderId}`, {
-    headers
-  })
-  .then(function (response) {
-    // console.log(response);
-    return {
-      isError: false,
-      data: response.data
-    }
-  }).catch((error)=>{
-    // console.log(error);
-    return {
-      isError: true,
-      data: error.response
-    }
-  });
-
-  return response;
-  
+  return getPluralOrderDetails(pluralOrderId, keys);
 }
 
 export async function getPluralPayments(
-  pluralOrderId: any,
-  keys:any
+  pluralOrderId: string,
+  keys: any
 ) {
+  const response = await getPluralOrderDetails(pluralOrderId, keys);
   
-  const baseUrl = keys.baseUrl ?? constants.PLURAL.BASE_URL_PROD
-  const headers = await buildOrderHeader(keys);
-  const response = await axios.get(`${baseUrl}/api/v1/inquiry/payment/all/order/${pluralOrderId}`, {
-    headers
-  })
-  .then(function (response) {
-    // console.log(response);
+  if (response.isError) {
+    return response;
+  }
+
+  return {
+    ...response,
+    data: {
+      ...response.data,
+      payments: response.data.payments || []
+    }
+  };
+}
+
+// Common internal function to fetch order details
+async function getPluralOrderDetails(
+  pluralOrderId: string,
+  keys: any
+) {
+  const baseUrl = keys.baseUrl ?? constants.PLURAL.BASE_URL_PROD;
+  
+  try {
+    // 1. First get the access token
+    const tokenResponse = await getAccessTokenPinelabs(
+      baseUrl,
+      keys.accessCode, 
+      keys.secretCode
+    );
+
+    if (tokenResponse.isError) {
+      console.error('Token generation failed:', tokenResponse.data);
+      throw new Error(`Token generation failed: ${JSON.stringify(tokenResponse.data)}`);
+    }
+
+    const accessToken = tokenResponse.data.access_token;
+    if (!accessToken) {
+      throw new Error('Access token not returned in response');
+    }
+
+    // 2. Make the API request with the fresh token
+    const response = await axios.get(`${baseUrl}/api/pay/v1/orders/${pluralOrderId}`, {
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json'
+      },
+      timeout: 15000
+    });
+
+    if (!response.data?.data) {
+      throw new Error('Invalid response structure - missing data');
+    }
+
+    console.log("Pinelabs Order Details - Response ->", response.data);
     return {
       isError: false,
-      data: response.data
-    }
-  }).catch((error)=>{
-    // console.log(error);
+      data: response.data.data
+    };
+  } catch (error) {
+    const errorDetails = {
+      message: error.message,
+      code: error.response?.status,
+      data: error.response?.data,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    };
+
+    console.error("Pinelabs Order Details Error:", {
+      pluralOrderId,
+      error: errorDetails
+    });
+
     return {
       isError: true,
-      data: error.response.data
-    }
-  });
-
-  return response;
-  
+      data: error.response?.data || {
+        error_code: "API_ERROR",
+        error_message: error.message,
+        details: errorDetails
+      }
+    };
+  }
 }
 
 export async function refundPayment(baseUrl:string,encodedPayload: any, headers: any) {
@@ -179,15 +375,14 @@ export async function refundPayment(baseUrl:string,encodedPayload: any, headers:
 }
 
 export async function refundProcedure(
-  ctx :any,
+  ctx: any,
   keys: any,
   type: string,
   id: string,
   amount: any,
   masterdata: MasterData
 ) {
-  //id depends on the state(type) of the payment either 'refund-cancel' Or 'return-items'
-  //if 'refund-cancel' then id = vtexOrderId else if 'return-items' then id = vtexPaymentId
+  // Get order details from masterdata
   const orderDetails = await getOrderDocument(id, type, masterdata);
   console.log('Order Details Master data : ', orderDetails.data);
 
@@ -202,26 +397,52 @@ export async function refundProcedure(
   addLog(ctx, {
     orderId: orderDetails.data[0]?.vtexOrderId,
     email: orderDetails.data[0]?.email ?? null,
-    message: "Refund Procedure - Get Order Doc from master data ",
+    message: "Refund Procedure - Get Order Doc from master data",
     body: JSON.stringify(orderDetails.data),
   });
 
-  const payload = await createRefundBuilder(orderDetails.data[0], keys, amount);
-  console.log("Refund payload", payload);
-  const encodedPayload = Buffer.from(JSON.stringify(payload)).toString(
-    "base64"
-  );
-  const hash256OfEncodedPayload = await hash(encodedPayload, keys.secretCode);
-  const headers = await buildRefundHeader(hash256OfEncodedPayload, keys);
+  // Get access token first
+  const tokenResponse = await getAccessTokenPinelabs(keys.baseUrl, keys.accessCode, keys.secretCode);
+  
+  if (tokenResponse.isError) {
+    addLog(ctx, {
+      orderId: orderDetails.data[0]?.vtexOrderId,
+      email: orderDetails.data[0]?.email ?? null,
+      message: "Refund Procedure - Failed to get access token",
+      body: JSON.stringify(tokenResponse.data),
+    });
+    
+    return {
+      isError: true,
+      data: tokenResponse.data,
+      message: "TOKEN_ERROR",
+    };
+  }
+
+  // Prepare refund payload
+  const refundPayload = {
+    parent_order_id: orderDetails.data[0]?.pluralOrderId,
+    merchant_order_reference: orderDetails.data[0]?.vtexOrderId,
+    refund_reason: "Customer request",
+    order_amount: {
+      value: amount ?? orderDetails.data[0]?.items?.total,
+      currency: "INR"
+    }
+  };
 
   addLog(ctx, {
     orderId: orderDetails.data[0]?.vtexOrderId,
     email: orderDetails.data[0]?.email ?? null,
-    message: "Refund Procedure - Refund Payload, hash256Encoded payload and headers",
-    body: JSON.stringify({refundPayload:payload, hashedPayload:hash256OfEncodedPayload, refundHeaders: headers}),
+    message: "Refund Procedure - Refund Payload",
+    body: JSON.stringify(refundPayload),
   });
 
-  const refundDetails = await refundPayment(keys.baseUrl,encodedPayload, headers);
+  // Call the new refund API
+  const refundDetails = await refundPaymentNew(
+    keys.baseUrl,
+    refundPayload,
+    tokenResponse.data.access_token
+  );
 
   addLog(ctx, {
     orderId: orderDetails.data[0]?.vtexOrderId,
@@ -232,43 +453,91 @@ export async function refundProcedure(
 
   let refund = <RefundRequest>{
     paymentId: orderDetails.data[0]?.vtexPaymentId,
-    value: orderDetails.data[0]?.total,
+    value: amount ?? orderDetails.data[0]?.items?.total,
   };
 
-  console.log("before returning refund");
-
-  if (
-    refundDetails.isError &&
-    refundDetails.data.data.error_message === "DUPLICATE_UNIQUE_ID_FOUND"
-  ) {
-    return {
-      isError: false,
-      data: refundDetails.data.data,
-      message: "DUPLICATE_UNIQUE_ID_FOUND",
-    };
-  }
-
-  console.log("after returning refund");
-
   if (refundDetails.isError) {
+    if (refundDetails.data?.error_message?.includes("DUPLICATE")) {
+      return {
+        isError: false,
+        data: refundDetails.data,
+        message: "DUPLICATE_UNIQUE_ID_FOUND",
+      };
+    }
+
     addLog(ctx, {
       orderId: orderDetails.data[0]?.vtexOrderId,
       email: orderDetails.data[0]?.email ?? null,
-      message: "Refund procedure - refund status CANCELLED udpdate",
+      message: "Refund procedure - refund status CANCELLED update",
       body: null,
     });
+    
     return await updateRefundStatus("CANCELLED", refund, refundDetails.data);
   }
 
+  const refundStatus = refundDetails.data?.status || "PROCESSED";
+  
   addLog(ctx, {
     orderId: orderDetails.data[0]?.vtexOrderId,
     email: orderDetails.data[0]?.email ?? null,
-    message: "Refund procedure - refund status - "+ refundDetails.data.order_data.order_status + " update",
+    message: `Refund procedure - refund status - ${refundStatus} update`,
     body: null,
   });
+  
   return await updateRefundStatus(
-    refundDetails.data.order_data.order_status,
+    refundStatus,
     refund,
     refundDetails.data
   );
+}
+
+
+export async function refundPaymentNew(
+  baseUrl: string,
+  payload: any,
+  token: string
+): Promise<{
+  isError: boolean;
+  data: any;
+}> {
+  try {
+    // Validate required fields
+    if (!payload.merchant_order_reference) {
+      return {
+        isError: true,
+        data: {
+          error_code: "INVALID_REQUEST",
+          error_message: "Merchant Order Reference is missing"
+        }
+      };
+    }
+
+    const url = `${baseUrl}/api/pay/v1/refunds`;
+    
+    const response = await axios.post(url, payload, {
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      },
+      timeout: 15000
+    });
+
+    console.log("Pinelabs Refund Payment - Response -> ", response.data);
+    
+    return {
+      isError: false,
+      data: response.data.data // Return the data part of the response
+    };
+  } catch (error) {
+    console.log("Pinelabs Refund Payment - Error -> ", 
+      axios.isAxiosError(error) ? JSON.stringify(error.response?.data) : error);
+    
+    return {
+      isError: true,
+      data: axios.isAxiosError(error) ? error.response?.data : { 
+        error_code: "API_ERROR",
+        error_message: error instanceof Error ? error.message : 'Unknown error' 
+      },
+    };
+  }
 }

@@ -6,8 +6,8 @@ export const constants = {
     REFUND_WEBHOOKS: "REFUND_WEBHOOKS"
   },
   PLURAL: {
-    BASE_URL_STAGING: "https://api-staging.pluralonline.com",
-    BASE_URL_PROD: "https://api.pluralonline.com",
+    BASE_URL_STAGING: "https://api.pluralpay.in",
+    BASE_URL_PROD: "https://api.pluralpay.in",
     SCRIPT_URL_STAGING:
       "https://checkout-staging.pluralonline.com/v1/web-sdk-checkout.js",
     SCRIPT_URL_PROD: "https://checkout.pluralonline.com/v1/web-sdk-checkout.js",

@@ -97,6 +97,20 @@
     {
       "name": "outbound-access",
       "attrs": {
+        "host": "api.pluralpay.in",
+        "path": "/*"
+      }
+    },
+    {
+      "name": "outbound-access",
+      "attrs": {
+        "host": "pluraluat.v2.pinepg.in",
+        "path": "/*"
+      }
+    },
+    {
+      "name": "outbound-access",
+      "attrs": {
         "host": "{{account}}.vtexcommercestable.com.br",
         "path": "/*"
       }

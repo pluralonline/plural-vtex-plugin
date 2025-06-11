@@ -21,7 +21,7 @@ import {
   createOrderDocument,
   getOrderDocument,
 } from './masterdata/orderSchema';
-import { createOrderPinelabs, refundProcedure } from './middlewares/pinelabs';
+import {  refundProcedure ,buildNewOrderPayloadFromLegacyData,createOrderPinelabsNew,getAccessTokenPinelabs} from './middlewares/pinelabs';
 import { getOrderVBase, saveOrderVBase } from './middlewares/vbase';
 import { checkIsEmployee, getPluralOrderStatus } from './middlewares/vtex';
 import { Keys } from './typings/vtex';
@@ -30,7 +30,7 @@ import { getAppSettings } from './utils/app-settings';
 import { constants } from './utils/constant';
 import { getPluralErrorMessage } from './utils/errorMessages';
 import { hash } from './utils/hash';
-import { configureUnhealthyScheduler } from './utils/utils';
+import { configureUnhealthyScheduler } from './utils/utils'; 
 
 const { v4: uuidv4 } = require('uuid');
 export default class PineLabs extends PaymentProvider<Clients> {
@@ -171,6 +171,9 @@ export default class PineLabs extends PaymentProvider<Clients> {
 
     const headers = await buildHeader(hash256OfEncodedPayload, keys);
 
+    const newPayload = buildNewOrderPayloadFromLegacyData(payload);
+
+
     addLog(this.context, {
       orderId: authorization.orderId,
       email: authorization.miniCart.buyer.email ?? null,
@@ -182,6 +185,19 @@ export default class PineLabs extends PaymentProvider<Clients> {
       }),
     });
 
+
+    addLog(this.context, {
+      orderId: authorization.orderId,
+      email: authorization.miniCart.buyer.email ?? null,
+      message: 'authorize: Request to Create Order Pinelabs V3 with new payload',
+      body: JSON.stringify({
+        payload: newPayload
+      }),
+    });
+
+    
+    /*
+    
     const pinelabsOrder = await createOrderPinelabs(keys.baseUrl, encodedPayload, headers);
 
     addLog(this.context, {
@@ -190,6 +206,36 @@ export default class PineLabs extends PaymentProvider<Clients> {
       message: 'authorize: Response of Create Order in Pinelabs',
       body: JSON.stringify({ response: pinelabsOrder }),
     });
+    */
+
+    
+
+    
+
+    const tokenResponse = await getAccessTokenPinelabs(keys.baseUrl,keys.accessCode, keys.secretCode);
+
+    addLog(this.context, {
+      orderId: authorization.orderId, // optional
+      email: authorization.miniCart.buyer.email ?? null, // optional
+      message: 'authorize: Response of Access Token from Pinelabs',
+      body: JSON.stringify({ response: tokenResponse }),
+    });
+
+
+    const pinelabsOrder = await createOrderPinelabsNew(keys.baseUrl,newPayload, tokenResponse.data.access_token);
+
+
+    addLog(this.context, {
+      orderId: authorization.orderId, // optional
+      email: authorization.miniCart.buyer.email ?? null, // optional
+      message: 'authorize: Response of Create Order in Pinelabs New V3 api',
+      body: JSON.stringify({ response: pinelabsOrder }),
+    });
+
+    
+
+
+
 
     if (pinelabsOrder.isError) {
       return Authorizations.deny(authorization, {
@@ -204,7 +250,7 @@ export default class PineLabs extends PaymentProvider<Clients> {
     const newVtexOrder = {
       vtexOrderId: authorization.orderId,
       vtexPaymentId: authorization.paymentId,
-      pluralOrderId: pinelabsOrder.data.plural_order_id,
+      pluralOrderId: pinelabsOrder.data.order_id, // Use the direct field from new API
       pluralPaymentId: '',
       callbackUrl: authorization.callbackUrl,
       status: false,
@@ -215,34 +261,56 @@ export default class PineLabs extends PaymentProvider<Clients> {
     };
 
     const orderDocument = await createOrderDocument(newVtexOrder, keys, masterdata);
-    const date = new Date();
-    await saveOrderVBase(vbase, newVtexOrder.vtexOrderId, {
-      ...newVtexOrder,
-      createdIn: date.toISOString(),
-    });
+const date = new Date();
+await saveOrderVBase(vbase, newVtexOrder.vtexOrderId, {
+  ...newVtexOrder,
+  createdIn: date.toISOString(),
+});
 
-    addLog(this.context, {
-      orderId: authorization.orderId,
-      email: authorization.miniCart.buyer.email ?? null,
-      message: 'authorize: Vtex Order Document Creation while creating pinelabs order : ',
-      body: JSON.stringify(orderDocument),
-    });
+addLog(this.context, {
+  orderId: authorization.orderId,
+  email: authorization.miniCart.buyer.email ?? null,
+  message: 'authorize: Vtex Order Document Creation while creating pinelabs order : ',
+  body: JSON.stringify(orderDocument),
+});
 
-    if (orderDocument.isError) {
-      return Authorizations.deny(authorization, {
-        message: 'Issue while creating the Document',
-        code: '400',
-      });
-    }
+if (orderDocument.isError) {
+  return Authorizations.deny(authorization, {
+    message: 'Issue while creating the Document',
+    code: '400',
+  });
+}
 
-    return Authorizations.pending(authorization, {
-      delayToCancel: 864000,
-      authorizationId: randomString(),
-      paymentAppData: {
-        appName: 'vtexasia.connector-pinelabs',
-        payload: JSON.stringify(pinelabsOrder),
-      },
-    });
+    // Prepare the proper response for the new API
+const transformedPayload = {
+  isError: false,
+  data: {
+    token: pinelabsOrder.data.token,
+    order_id: pinelabsOrder.data.order_id, // Keep original field name
+    redirect_url: pinelabsOrder.data.redirect_url, // Keep original field name
+    response_code: pinelabsOrder.data.response_code,
+    response_message: pinelabsOrder.data.response_message,
+    callbackUrl: authorization.callbackUrl,
+    pluralScriptUrl: keys.pluralScriptUrl,
+     // Ensure we have absolute URLs for success and failure
+     successUrl: authorization.returnUrl || `/checkout/orderPlaced/?merchantOrderId=${authorization.orderId}`,
+     failureUrl: authorization.returnUrl || `/checkout?orderId=${authorization.orderId}`,
+     // Add these for better tracking
+     merchant_order_reference: newVtexOrder.vtexOrderId,
+     vtex_payment_id: authorization.paymentId
+  },
+};
+
+
+return Authorizations.pending(authorization, {
+  delayToCancel: 864000,
+  authorizationId: randomString(),
+  paymentAppData: {
+    appName: 'vtexasia.connector-pinelabs',
+    payload: JSON.stringify(transformedPayload),
+  },
+});
+
   }
 
   public async cancel(cancellation: CancellationRequest): Promise<CancellationResponse> {
@@ -400,22 +468,36 @@ export default class PineLabs extends PaymentProvider<Clients> {
     console.log({ orderStatus });
     console.log({ paymentId });
     const payment: any = { paymentId: paymentId };
-
-    const paymentDetails = orderDetails.payment_info_data.map((res: any) => {
-      return {
-        payment_id: res.payment_id,
-        payment_status: res.payment_status,
-      };
-    });
-
+  
+    // Handle both old and new API response structures
+    let paymentDetails: any[] = [];
+    
+    if (orderDetails.payments) {
+      // New API structure
+      paymentDetails = orderDetails.payments.map((payment: any) => {
+        return {
+          payment_id: payment.id,
+          payment_status: payment.status,
+        };
+      });
+    } else if (orderDetails.payment_info_data) {
+      // Old API structure (backward compatibility)
+      paymentDetails = orderDetails.payment_info_data.map((res: any) => {
+        return {
+          payment_id: res.payment_id,
+          payment_status: res.payment_status,
+        };
+      });
+    }
+  
     addLog(this.context, {
       orderId: authorization.orderId,
       email: authorization.miniCart.buyer.email ?? null,
       message: 'authorize: Update Vtex Order Status with status: ' + orderStatus,
       body: JSON.stringify({ orderDetails, errorReason }),
     });
-
-    if (orderStatus === 'CHARGED' || orderStatus === 'CAPTURED') {
+  
+    if (orderStatus === 'CHARGED' || orderStatus === 'CAPTURED' || orderStatus === 'PROCESSED') {
       console.log('Order is charged');
       return Authorizations.approve(payment, {
         authorizationId: randomString(),
@@ -423,7 +505,6 @@ export default class PineLabs extends PaymentProvider<Clients> {
         tid: randomString(),
       });
     } else if (orderStatus === 'PENDING' || orderStatus === 'ORDER_ATTEMPTED') {
-      // await this.retry(authorization);
       return Authorizations.pending(authorization, {
         delayToCancel: 864000,
         authorizationId: randomString(),
@@ -436,7 +517,7 @@ export default class PineLabs extends PaymentProvider<Clients> {
       return Authorizations.deny(payment, {
         message:
           'Plural Order Status : ' +
-          orderDetails?.order_data?.order_status +
+          orderStatus +
           ' with payment details : ' +
           JSON.stringify(paymentDetails),
         code: '500',

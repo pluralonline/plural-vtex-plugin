@@ -9,13 +9,17 @@ import axios from 'axios';
 import { json } from 'co-body';
 import { addLog } from '../masterdata/logs';
 import { getOrderDocument, partialOrderDocumentUpdate } from '../masterdata/orderSchema';
-import { PinelabsWebhookBody } from '../typings/pinelabs';
+//import { PinelabsWebhookBody } from '../typings/pinelabs';
 import { Keys } from '../typings/vtex';
 import { randomString } from '../utils';
 import { getAppSettings } from '../utils/app-settings';
 import { constants } from '../utils/constant';
 import { getPluralPaymentById, getPluralPaymentByOrderId, getPluralPayments } from './pinelabs';
 import { getOrderVBase, save, saveOrderVBase } from './vbase';
+
+
+
+
 
 export async function updatePaymentStatus(ctx: any) {
   console.log('============*UPDATING PAYMENT STATUS*============');
@@ -230,7 +234,7 @@ async function updateVtexPaymentStatus(
   let authorizationResponse = <AuthorizationResponse>{};
   let request = null;
   let authorizationRequest = <AuthorizationRequest>{ paymentId: paymentId };
-  if (orderStatus === 'CHARGED') {
+  if (orderStatus === 'CHARGED' || orderStatus === 'PROCESSED') {
     authorizationResponse = <AuthorizationResponse>{
       paymentId: authorizationRequest.paymentId,
       status: 'approved',
@@ -293,6 +297,8 @@ function updateRefundByWebhook(
   }
 }
 
+
+
 export async function paymentWebhook(ctx: any) {
   console.log('============*PAYMENT WEBHOOKS*============');
   const {
@@ -301,51 +307,119 @@ export async function paymentWebhook(ctx: any) {
   } = ctx;
 
   let vtexStatusUpdateResponse = null;
-  const body: PinelabsWebhookBody = await json(ctx.req);
+  
+  // Parse incoming request body
+  let body: any;
+  try {
+    // First try to get raw body
+    const chunks: Buffer[] = [];
+    for await (const chunk of ctx.req) {
+      chunks.push(chunk);
+    }
+    const rawBody = Buffer.concat(chunks).toString('utf8');
 
-  if (body.wakeup) {
-    ctx.status = 200;
-    ctx.body = 'allready awaken';
+    if (!rawBody) {
+      throw new Error('Empty request body');
+    }
+
+    // Parse as URL-encoded form data
+    const formData = new URLSearchParams(rawBody);
+    body = {
+      merchant_data: {
+        order_id: formData.get('order_id')
+      },
+      order_data: {
+        plural_order_id: formData.get('order_id'),
+        order_status: formData.get('status')
+      },
+      payment_info_data: {
+        payment_status: formData.get('status'),
+        payment_id: formData.get('order_id')
+      }
+    };
+
+    // Handle wakeup call (if needed)
+    if (formData.get('wakeup')) {
+      ctx.status = 200;
+      ctx.body = 'already awaken';
+      return;
+    }
+  } catch (error) {
+    addLog(ctx, {
+      orderId: 'unknown',
+      email: null,
+      message: 'Webhook: Failed to parse request body',
+      body: JSON.stringify({
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    });
+    ctx.status = 400;
+    ctx.body = { error: 'Invalid request body format' };
     return;
   }
 
+  // Validate required data
+  if (!body.merchant_data?.order_id || !body.order_data?.order_status) {
+    addLog(ctx, {
+      orderId: 'unknown',
+      email: null,
+      message: 'Webhook: Missing required fields in webhook data',
+      body: JSON.stringify(body),
+    });
+    ctx.status = 400;
+    ctx.body = { error: 'Missing required fields in webhook data' };
+    return;
+  }
+
+  const orderId = body.merchant_data.order_id;
+  const pluralOrderId = body.merchant_data.plural_order_id || orderId;
+  const paymentStatus = body.order_data.order_status;
+  const paymentInfo = body.payment_info_data || { 
+    payment_status: body.order_data.order_status,
+    payment_id: body.order_data.plural_order_id || orderId
+  };
+
   addLog(ctx, {
-    orderId: body.merchant_data.order_id,
+    orderId: orderId,
     email: null,
-    message: 'Payment webhook body',
+    message: 'Payment webhook received',
     body: JSON.stringify(body),
   });
 
+  // Rest of your existing logic remains the same...
+  // Get order details from MasterData
   const orderdetails = await getOrderDocument(
-    body.order_data.plural_order_id,
+    pluralOrderId,
     'update',
     masterdata,
   );
 
+  // Fallback to VBase if MasterData returns empty
   if (orderdetails.data.length === 0) {
-    const vbaseOrder: any = await getOrderVBase(vbase, body.merchant_data.order_id);
+    const vbaseOrder: any = await getOrderVBase(vbase, orderId);
     console.log({ vbaseOrder });
+    
     if (vbaseOrder && !vbaseOrder.isError) {
       orderdetails.data.push(vbaseOrder);
     }
 
     addLog(ctx, {
-      orderId: body.merchant_data.order_id,
+      orderId: orderId,
       email: null,
-      message: 'Webhook: gerOrderDocument returned empty array! Trying to fetch data from VBase',
+      message: 'Webhook: Order not found in MasterData, checking VBase',
       body: JSON.stringify(vbaseOrder),
     });
   }
 
+  // ... continue with the rest of your existing logic
+  // Handle errors from order details fetch
   if (orderdetails.isError) {
     addLog(ctx, {
-      orderId: body.merchant_data.order_id,
+      orderId: orderId,
       email: null,
-      message:
-        'Webhook: Error while getting order details with pluralOrderId : ' +
-        body.order_data.plural_order_id,
+      message: 'Webhook: Error fetching order details',
       body: JSON.stringify({
-        orderdetails: orderdetails.data,
+        error: orderdetails.error,
         searchQuery: orderdetails.searchQuery,
       }),
     });
@@ -354,40 +428,35 @@ export async function paymentWebhook(ctx: any) {
     return;
   }
 
-  // if no order found in the masterdata, trying to fetch data from vbase
-
+  // Check if order was found
   if (orderdetails.data.length === 0) {
     addLog(ctx, {
-      orderId: body.merchant_data.order_id,
+      orderId: orderId,
       email: null,
-      message: 'Webhook: Order not found! pluralOrderId : ' + body.order_data.plural_order_id,
+      message: 'Webhook: Order not found in MasterData or VBase',
       body: JSON.stringify({
-        orderdetails: orderdetails.data,
-        searchQuery: orderdetails.searchQuery,
+        pluralOrderId: pluralOrderId,
       }),
     });
-    ctx.status = 500;
-    ctx.body = orderdetails;
+    ctx.status = 404;
+    ctx.body = { error: 'Order not found' };
     return;
   }
 
   const order = orderdetails.data[0];
 
-  console.log('Order created date : ', order.createdIn);
-  let orderCreationDate = new Date(order.createdIn);
-  console.log('Converted into date : ', orderCreationDate);
-  //Adding 1 hour to the order creation date
-  orderCreationDate.setHours(orderCreationDate.getHours() + 1);
-  console.log('Adding 1 hour to order creation date : ', orderCreationDate);
-  let currentDate = new Date();
-  console.log('current date : ', currentDate);
+  // Log order creation time for buffer check
+  console.log('Order created date:', order.createdIn);
+  const orderCreationDate = new Date(order.createdIn);
+  const currentDate = new Date();
+  orderCreationDate.setHours(orderCreationDate.getHours() + 1); // Add 1 hour buffer
 
-  //IF Order is FAILED and current time is less than the created time with 1 hour buffer we are skipping the vtex status update.
-  if (body.order_data.order_status === 'FAILED' && currentDate < orderCreationDate) {
+  // Skip failed status if within buffer time
+  if (paymentStatus === 'FAILED' && currentDate < orderCreationDate) {
     addLog(ctx, {
-      orderId: body.merchant_data.order_id,
+      orderId: orderId,
       email: null,
-      message: `WEBHOOK RESPONSE : Plural Transaction/Payment status is Failed , Webhook triggered before buffer time of 1 hour`,
+      message: 'WEBHOOK: Payment failed but within buffer time, skipping update',
       body: null,
     });
     ctx.status = 200;
@@ -395,99 +464,134 @@ export async function paymentWebhook(ctx: any) {
     return;
   }
 
-  // Checking: is status is already updated (from frontend iframe callback handler)?
+  // Check if status needs to be updated
   if (
-    (!order.status || order.pinelabsPaymentStatus !== body.payment_info_data.payment_status) &&
-    body.payment_info_data.payment_status !== constants.PLURAL.STATUS.ORDER_ATTEMPTED
+    (!order.status || order.pinelabsPaymentStatus !== paymentInfo.payment_status) &&
+    paymentInfo.payment_status !== 'ORDER_ATTEMPTED'
   ) {
-    const newValues: { field: string; value: any }[] = [];
-    newValues.push({ field: 'status', value: true });
-    newValues.push({
-      field: 'pinelabsPaymentStatus',
-      value: body.payment_info_data.payment_status ?? '',
-    });
+    const newValues: { field: string; value: any }[] = [
+      { field: 'status', value: true },
+      { field: 'pinelabsPaymentStatus', value: paymentInfo.payment_status },
+    ];
 
-    if (body.payment_info_data.payment_id) {
+    if (paymentInfo.payment_id) {
       newValues.push({
         field: 'pluralPaymentId',
-        value: body.payment_info_data.payment_id.toString(),
+        value: paymentInfo.payment_id.toString(),
       });
     }
 
+    // Update MasterData
     const updatedDocument = await partialOrderDocumentUpdate(order.id, newValues, masterdata);
 
-    let vbaseOrder: any = await getOrderVBase(vbase, body.merchant_data.order_id);
-
+    // Update VBase if needed
+    let vbaseOrder: any = await getOrderVBase(vbase, orderId);
     if (vbaseOrder && !vbaseOrder.isError) {
-      for (let newVal of newValues) {
+      for (const newVal of newValues) {
         vbaseOrder[newVal.field] = newVal.value;
       }
       await saveOrderVBase(vbase, vbaseOrder.vtexOrderId, vbaseOrder);
     }
 
     addLog(ctx, {
-      orderId: body.merchant_data.order_id,
+      orderId: orderId,
       email: null,
-      message: 'Webhook: Partially updating the status of the payment in master data',
+      message: 'Webhook: Updated payment status in MasterData and VBase',
       body: JSON.stringify({
-        dataTobeSaved: newValues,
-        resultOfPartialUpdate: updatedDocument,
+        updates: newValues,
+        result: updatedDocument,
       }),
     });
 
     if (updatedDocument.isError) {
-      console.log('Error while updating document with documentId : ' + order.id, newValues);
+      addLog(ctx, {
+        orderId: orderId,
+        email: null,
+        message: 'Webhook: Failed to update order document',
+        body: JSON.stringify({
+          error: updatedDocument.isError,
+          documentId: order.id,
+        }),
+      });
       ctx.status = 500;
       ctx.body = updatedDocument;
       return;
     }
 
-    const authorization: any = {
-      paymentId: order.vtexPaymentId,
-    };
-    console.log({ authorization });
-
-    if (body.payment_info_data.refund_id) {
+    // Handle refund if present
+    if (paymentInfo.refund_id) {
       addLog(ctx, {
-        orderId: body.merchant_data.order_id,
+        orderId: orderId,
         email: null,
-        message:
-          'Webhook: Pinelabs Refund Payment status - ' +
-          body.payment_info_data.payment_status +
-          ' with refund Id - ' +
-          body.payment_info_data.refund_id,
-        body: null,
+        message: `Webhook: Processing refund - ${paymentStatus}`,
+        body: JSON.stringify({
+          refundId: paymentInfo.refund_id,
+          paymentId: order.vtexPaymentId,
+        }),
       });
+      
       updateRefundByWebhook(
-        body.payment_info_data.payment_status,
+        paymentStatus,
         order.vtexPaymentId,
-        body.payment_info_data.refund_id,
+        paymentInfo.refund_id,
       );
       ctx.status = 200;
       ctx.body = {};
       return;
     }
 
-    vtexStatusUpdateResponse = await updateVtexPaymentStatus(
-      body.order_data.order_status,
-      order.vtexPaymentId,
-      // authorization,
-      // ctx,
-      order.callbackUrl,
-      authToken,
-    );
+    // Update VTEX payment status
+    try {
+      vtexStatusUpdateResponse = await updateVtexPaymentStatus(
+        paymentStatus,
+        order.vtexPaymentId,
+        order.callbackUrl,
+        authToken,
+      );
 
-    addLog(ctx, {
-      orderId: body.merchant_data.order_id,
-      email: null,
-      message: 'Webhook: Updating Vtex payment status - ' + body.order_data.order_status,
-      body: JSON.stringify({ vtexAuthorizationUpdateResponse: vtexStatusUpdateResponse }),
-    });
+      addLog(ctx, {
+        orderId: orderId,
+        email: null,
+        message: `Webhook: Updated VTEX payment status to ${paymentStatus}`,
+        body: JSON.stringify({
+          response: vtexStatusUpdateResponse,
+        }),
+      });
+    } catch (vtexError) {
+      addLog(ctx, {
+        orderId: orderId,
+        email: null,
+        message: 'Webhook: Failed to update VTEX payment status',
+        body: JSON.stringify({
+          error: vtexError.message,
+          paymentStatus: paymentStatus,
+          vtexPaymentId: order.vtexPaymentId,
+        }),
+      });
+      ctx.status = 500;
+      ctx.body = { error: 'Failed to update VTEX payment status' };
+      return;
+    }
   }
+
+
+  if (vtexStatusUpdateResponse && !vtexStatusUpdateResponse.isError) {
+    if (paymentStatus === 'PROCESSED') {
+      // Construct the success URL (modify this based on your store's URL structure)
+      const successUrl = `https://${ctx.vtex.host}/checkout/orderPlaced/?og=${order.vtexOrderId}`;
+      
+      ctx.status = 200;
+      ctx.body = {
+        redirectUrl: successUrl, // Redirect to order confirmation page
+      };
+      return;
+    }
+  }
+
+  
 
   ctx.status = 200;
   ctx.body = {};
-  return;
 }
 
 export async function updateRefundStatus(
@@ -576,21 +680,16 @@ export const checkIsEmployee = async (
 
 export async function getPluralOrderStatus(pluralOrderId: any, keys: any) {
   const pluralDetails: any = await getPluralPayments(pluralOrderId, keys);
-  // let paymentPluralStatus = "";
   const paymentinfo = pluralDetails.data;
+  
   if (pluralDetails.isError) {
     return { isError: true, status: paymentinfo.error_message, data: paymentinfo };
   }
 
-  // if (!paymentinfo?.payment_info_data) {
-  //   return { isError: true, status: paymentPluralStatus, data: paymentinfo };
-  // }
-  // for (let payment of paymentinfo?.payment_info_data) {
-  //   //checking if the payment is captured among all the transactions of that particular Order.
-  //   paymentPluralStatus =
-  //     payment.payment_status === "CAPTURED" ? "CAPTURED" : "FAILURE";
-  //   if (payment.payment_status === "CAPTURED") break;
-  // }
-
-  return { isError: false, status: paymentinfo.order_data.order_status, data: paymentinfo };
+  // Use the direct status field from the response instead of order_data.order_status
+  return { 
+    isError: false, 
+    status: paymentinfo.status, // Changed from paymentinfo.order_data.order_status
+    data: paymentinfo 
+  };
 }

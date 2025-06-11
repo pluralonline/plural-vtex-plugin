@@ -2,7 +2,7 @@ import axios from "axios";
 import React, { Component } from "react";
 import { account, appName, majorVersion } from "./constants";
 import "./styles.css";
-import {PLURAL} from "./constants";
+import { PLURAL } from "./constants";
 
 type Props = {
   appPayload: any;
@@ -22,58 +22,78 @@ const css = `
 `;
 
 const injectScript = (id: string, src: string, onLoad: any) => {
-  if (document.getElementById(id)) {
-    return;
-  }
+  if (document.getElementById(id)) return;
 
   const head = document.getElementsByTagName("head")[0];
-
   const js = document.createElement("script");
   js.id = id;
   js.src = src;
   js.async = true;
   js.defer = true;
   js.onload = onLoad;
-
   head.appendChild(js);
 };
 
 const injectStyle = () => {
   const head = document.getElementsByTagName("head")[0];
-
   const tag = document.createElement("style");
   tag.innerHTML = css;
-
   head.appendChild(tag);
 };
 
 export default class PinelabsApp extends Component<Props> {
   componentDidMount() {
-    let parsedPayload = JSON.parse(this.props.appPayload);
-    console.log({parsedPayload})
+    const parsedPayload = JSON.parse(this.props.appPayload);
+
+    if (parsedPayload.data.redirect_url) {
+      this.setupPluralCheckout(parsedPayload.data.redirect_url);
+      return;
+    }
+
     injectScript(
       "plural-checkout-script",
-      parsedPayload.data.pluralScriptUrl ?? PLURAL.SCRIPT_URL_PROD,
+      parsedPayload.data.redirect_url ?? PLURAL.SCRIPT_URL_PROD,
       this.handleOnLoad
     );
     injectStyle();
   }
 
-  handleOnLoad = async () => {
-   // debugger
-    let parsedPayload = JSON.parse(this.props.appPayload);
+  setupPluralCheckout = (redirectUrl: string) => {
+    injectScript(
+      "plural-checkout-script",
+      PLURAL.SCRIPT_URL_PROD,
+      () => this.handlePluralSdkLoad(redirectUrl)
+    );
+    injectStyle();
+  };
 
+  handlePluralSdkLoad = (redirectUrl: string) => {
     const options = {
-      theme: "default", // "default" or "black"
-      orderToken: parsedPayload.data.token,
-      channelId: "WEB", // "APP" or "WEB"
-      paymentMode: "CREDIT_DEBIT,NETBANKING,UPI,WALLET,EMI,DEBIT_EMI", // comma separated - Example - 'CREDIT_DEBIT,NETBANKING,UPI,WALLET,EMI,DEBIT_EMI'
-      showSavedCardsFeature: false, // type = boolean, default = true
+      redirectUrl: redirectUrl,
       successHandler: this.successHandler,
       failedHandler: this.failedHandler,
     };
 
-    //@ts-ignore
+    // @ts-ignore
+    const plural = new Plural(options);
+    plural.open(options);
+    $(window).trigger("removePaymentLoading.vtex");
+  };
+
+  handleOnLoad = async () => {
+    let parsedPayload = JSON.parse(this.props.appPayload);
+
+    const options = {
+      theme: "default",
+      orderToken: parsedPayload.data.token,
+      channelId: "WEB",
+      paymentMode: "CREDIT_DEBIT,NETBANKING,UPI,WALLET,EMI,DEBIT_EMI",
+      showSavedCardsFeature: false,
+      successHandler: this.successHandler,
+      failedHandler: this.failedHandler,
+    };
+
+    // @ts-ignore
     const plural = new Plural(options);
     plural.open(options);
     $(window).trigger("removePaymentLoading.vtex");
@@ -81,45 +101,92 @@ export default class PinelabsApp extends Component<Props> {
 
   successHandler = async (response: any) => {
     let parsedPayload = JSON.parse(this.props.appPayload);
+    console.log("Success handler called with response:", response);
+    
     axios
       .post(`/_v/${account}.${appName}/v${majorVersion}/paymentStatus`, {
         ...response,
         callbackUrl: parsedPayload.data.callbackUrl,
       })
       .then((res) => {
-        //console.log({res})
-        //debugger
-        if(res.data.data.status  === "ORDER_ATTEMPTED"){
-          return
+        console.log("Payment status API response:", res.data);
+        
+        if(res.data.data?.status === "ORDER_ATTEMPTED"){
+          console.log("Payment in ORDER_ATTEMPTED state, waiting for confirmation");
+          return;
         }
         
-        $(window).trigger("transactionValidation.vtex", [false]);
+        // CRITICAL FIX: Change [false] to [true] for successful payments!
+        $(window).trigger("transactionValidation.vtex", [true]);
+        
+        // Also send the approved message to parent window
+        if (window.parent) {
+          window.parent.postMessage({ name: 'checkout:payment-authorization', status: 'approved' }, '*');
+        }
+        
+        console.log("Payment approved, redirection should occur automatically");
+        
+        // Check if we have a redirectUrl in the response and use it
+        if (res.data.redirectUrl) {
+          console.log("Redirecting to:", res.data.redirectUrl);
+          setTimeout(() => {
+            window.top.location.href = res.data.redirectUrl;
+          }, 1000);
+        }
       })
-      .catch(() => {
+      .catch((error) => {
+        console.error("Payment status update failed:", error);
         $(window).trigger("transactionValidation.vtex", [false]);
       });
   };
+  
 
   failedHandler = async (response: any) => {
-    if (!response.plural_order_id) {
-      return;
-    }
+    if (!response.plural_order_id) return;
 
     let parsedPayload = JSON.parse(this.props.appPayload);
-    axios
-      .post(`/_v/${account}.${appName}/v${majorVersion}/paymentStatus`, {
-        ...response,
-        callbackUrl: parsedPayload.data.callbackUrl,
-      })
-      .then((res) => {
-        if(res.data.data.status  === "ORDER_ATTEMPTED"){
-          return
+    try {
+      const res = await axios.post(
+        `/_v/${account}.${appName}/v${majorVersion}/paymentStatus`,
+        {
+          ...response,
+          callbackUrl: parsedPayload.data.callbackUrl,
+        },
+        {
+          headers: {
+            "Content-Type": "application/json",
+          },
         }
-        $(window).trigger("transactionValidation.vtex", [false]);
-      });
+      );
+
+      if (res.data.data.status === "ORDER_ATTEMPTED") return;
+
+      this.handleRedirectFailure();
+
+    } catch (error) {
+      console.error("Payment status update failed:", error);
+      this.handleRedirectFailure();
+    }
+  };
+
+  handleRedirectFailure = () => {
+    $(window).trigger("transactionValidation.vtex", [false]);
+
+    const message = { message: "checkout:payment-authorization", status: "denied" };
+    if (window.parent !== window) {
+      window.parent.postMessage(message, "*");
+    } else {
+      window.postMessage(message, "*");
+    }
   };
 
   render() {
-    return <div></div>;
+    return (
+      <div>
+        <p style={{ textAlign: "center", marginTop: "40px" }}>
+          Processing your payment. Please wait...
+        </p>
+      </div>
+    );
   }
 }
