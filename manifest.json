@@ -1,6 +1,6 @@
 {
   "name": "connector-pinelabs",
-  "vendor": "whirlpoolindiaqa",
+  "vendor": "vtexasia",
   "version": "1.0.35",
   "title": "Pinelabs Payment Connector",
   "description": "Payment gateway connector using the pinelabs",
