@@ -7,7 +7,7 @@ import { addLog } from "../masterdata/logs";
 import { getOrderDocument } from "../masterdata/orderSchema";
 import { constants } from "../utils/constant";
 //import { hash } from "../utils/hash";
-import { updateRefundStatus } from "./vtex"; 
+import { updateRefundStatus } from "./vtex";
 
 
 export async function createOrderPinelabs(
@@ -175,7 +175,7 @@ export function buildNewOrderPayloadFromLegacyData(legacyPayload: any): any {
         email_id: customer_data?.email_id ?? '',
         first_name: billing_address_data?.first_name ?? '',
         last_name: billing_address_data?.last_name ?? '',
-        mobile_number: customer_data?.mobile_number ? '91' + customer_data.mobile_number : '',
+        mobile_number: customer_data?.mobile_number ? customer_data.mobile_number : '',
         billing_address: {
           address1: billing_address_data?.address1 ?? '',
           pincode: billing_address_data?.pin_code ?? '',
