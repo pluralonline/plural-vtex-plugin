@@ -220,7 +220,7 @@ export async function updatePaymentStatus(ctx: any) {
   return;
 }
 
-async function updateVtexPaymentStatus(
+export async function updateVtexPaymentStatus(
   orderStatus: any,
   paymentId: any,
   // authorization: any,
