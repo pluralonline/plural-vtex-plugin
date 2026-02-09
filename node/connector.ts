@@ -23,7 +23,7 @@ import {
 } from './masterdata/orderSchema';
 import {  refundProcedure ,buildNewOrderPayloadFromLegacyData,createOrderPinelabsNew,getAccessTokenPinelabs} from './middlewares/pinelabs';
 import { getOrderVBase, saveOrderVBase } from './middlewares/vbase';
-import { checkIsEmployee, getPluralOrderStatus } from './middlewares/vtex';
+import { checkIsEmployee, getPluralOrderStatus, updateVtexPaymentStatus } from './middlewares/vtex';
 import { Keys } from './typings/vtex';
 import { randomString } from './utils';
 import { getAppSettings } from './utils/app-settings';
@@ -303,7 +303,7 @@ const transformedPayload = {
 
 
 return Authorizations.pending(authorization, {
-  delayToCancel: 864000,
+  delayToCancel: 604800, // 7 days in seconds - gives ample time for webhook
   authorizationId: randomString(),
   paymentAppData: {
     appName: 'vtexasia.connector-pinelabs',
@@ -357,6 +357,32 @@ return Authorizations.pending(authorization, {
     const pluralOrderId = orderDetails.data[0].pluralOrderId;
     const pluralOrderStatus = await getPluralOrderStatus(pluralOrderId, keys);
     console.log('PLURAL ORDER STATUS : ', JSON.stringify(pluralOrderStatus));
+
+    // SMART CANCELLATION: Don't cancel if payment is successful in Plural
+    if (
+      pluralOrderStatus.status === constants.PLURAL.STATUS.CHARGED ||
+      pluralOrderStatus.status === constants.PLURAL.STATUS.PROCESSED ||
+      pluralOrderStatus.status === 'SUCCESS'
+    ) {
+      console.log('⚠️ CANCEL DENIED: Payment is successful in Plural, triggering webhook update instead');
+      
+      // Try to update VTEX with success status
+      try {
+        await updateVtexPaymentStatus(
+          pluralOrderStatus.status,
+          orderDetails.data[0].vtexPaymentId,
+          orderDetails.data[0].callbackUrl,
+          this.context.vtex.authToken
+        );
+      } catch (error) {
+        console.log('Error updating VTEX status during cancel prevention:', error);
+      }
+
+      return Cancellations.deny(cancellation, {
+        message: 'Payment already successful in Plural gateway. Cannot cancel.',
+        code: 'PAYMENT_SUCCESSFUL',
+      });
+    }
 
     if (
       pluralOrderStatus.status === constants.PLURAL.STATUS.ORDER_ATTEMPTED ||
