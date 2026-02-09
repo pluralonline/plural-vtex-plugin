@@ -234,7 +234,7 @@ async function updateVtexPaymentStatus(
   let authorizationResponse = <AuthorizationResponse>{};
   let request = null;
   let authorizationRequest = <AuthorizationRequest>{ paymentId: paymentId };
-  if (orderStatus === 'CHARGED' || orderStatus === 'PROCESSED') {
+  if (orderStatus === 'CHARGED' || orderStatus === 'PROCESSED' || orderStatus === 'SUCCESS') {
     authorizationResponse = <AuthorizationResponse>{
       paymentId: authorizationRequest.paymentId,
       status: 'approved',
@@ -244,7 +244,7 @@ async function updateVtexPaymentStatus(
       delayToAutoSettleAfterAntifraud: 120,
       delayToCancel: 1000,
     };
-    console.log('Order is charged - ');
+    console.log('Order is charged/processed/success - ', orderStatus);
   } else if (orderStatus === 'PENDING' || orderStatus === 'ORDER_ATTEMPTED') {
     // await pinelabs.retry(authorization);
     return { isError: false, data: { status: orderStatus } };
@@ -368,7 +368,7 @@ export async function paymentWebhook(ctx: any) {
 
   const order = orderdetails.data[0];
 
-  if ((paymentStatus === 'PROCESSED' || paymentStatus === 'CHARGED') && 
+  if ((paymentStatus === 'PROCESSED' || paymentStatus === 'CHARGED' || paymentStatus === 'SUCCESS') && 
       !order.status && 
       order.vtexPaymentId && 
       order.callbackUrl) {
