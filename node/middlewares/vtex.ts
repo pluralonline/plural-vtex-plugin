@@ -147,6 +147,40 @@ export async function updatePaymentStatus(ctx: any) {
     body: JSON.stringify({ result: paymentDetails }),
   });
 
+  // Handle error case first - API timeout or failure
+  if (paymentDetails.isError) {
+    const errorMessage = paymentDetails.data?.error_message || 
+                        paymentDetails.data?.message || 
+                        'Plural API error - unable to fetch payment status';
+    
+    addLog(ctx, {
+      orderId: orderdetails.data[0]?.vtexOrderId,
+      email: orderdetails.data[0]?.email ?? null,
+      message: 'updatePaymentStatus: Error fetching Plural payment details - keeping payment pending for webhook',
+      body: JSON.stringify({ 
+        error: errorMessage, 
+        errorDetails: paymentDetails.data,
+        pluralOrderId: body.plural_order_id,
+        paymentId: body.payment_id 
+      }),
+    });
+
+    // Return "undefined" status to keep payment alive for webhook processing
+    vtexStatusUpdateResponse = {
+      isError: false,
+      data: {
+        status: 'undefined',
+        paymentId: orderdetails.data[0].vtexPaymentId,
+        message: errorMessage,
+        code: null,
+      }
+    };
+
+    ctx.status = 200;
+    ctx.body = vtexStatusUpdateResponse;
+    return;
+  }
+
   if (
     body.payment_id &&
     paymentDetails.data.order_data.order_status !== constants.PLURAL.STATUS.ORDER_ATTEMPTED
@@ -199,7 +233,8 @@ export async function updatePaymentStatus(ctx: any) {
       }
     }
   }
-  if (!paymentDetails.isError && !orderdetails.data[0].status) {
+  
+  if (!orderdetails.data[0].status) {
     vtexStatusUpdateResponse = await updateVtexPaymentStatus(
       paymentDetails.data.order_data.order_status,
       orderdetails.data[0].vtexPaymentId,
