@@ -30,7 +30,9 @@ export async function updatePaymentStatus(ctx: any) {
   const body = await json(ctx.req);
   let vtexStatusUpdateResponse = null;
   const { error_code, error_message } = body;
-  const path = body.payment_id ? body.payment_id : body.plural_order_id;
+  // Handle both plural_order_id and order_id from callback
+  const pluralOrderId = body.plural_order_id || body.order_id;
+  const path = body.payment_id || pluralOrderId;
   const appSettings = await getAppSettings(apps);
   const keys: Keys = {
     publicKey: appSettings.app_key,
@@ -52,14 +54,14 @@ export async function updatePaymentStatus(ctx: any) {
     console.log({ result });
   }
 
-  const orderdetails = await getOrderDocument(body.plural_order_id, 'update', masterdata);
+  const orderdetails = await getOrderDocument(pluralOrderId, 'update', masterdata);
   console.log(
-    'Order Details for the pluralOrderId : ' + body.plural_order_id,
+    'Order Details for the pluralOrderId : ' + pluralOrderId,
     JSON.stringify(orderdetails.data),
   );
 
   if (orderdetails.data.length === 0) {
-    const pluralOrderData = await getPluralOrderStatus(body.plural_order_id, keys);
+    const pluralOrderData = await getPluralOrderStatus(pluralOrderId, keys);
     console.log({ pluralOrderData: pluralOrderData.data });
     if (pluralOrderData.data && !pluralOrderData.isError) {
       const vbaseOrder: any = await getOrderVBase(
@@ -87,7 +89,7 @@ export async function updatePaymentStatus(ctx: any) {
       email: orderdetails.data[0]?.email ?? null,
       message:
         'updatePaymentStatus: Error while getting document with pluralOrderId : ' +
-        body.plural_order_id,
+        pluralOrderId,
       body: JSON.stringify({ request: body, orderdetails: orderdetails }),
     });
     ctx.status = 500;
@@ -107,7 +109,7 @@ export async function updatePaymentStatus(ctx: any) {
       email: orderdetails.data[0]?.email ?? null,
       message:
         'updatePaymentStatus: No order details in masterdata with : ' +
-        body.plural_order_id +
+        pluralOrderId +
         ' . Updating Vtex status to FAILED',
       body: JSON.stringify({
         request: body,
@@ -117,7 +119,7 @@ export async function updatePaymentStatus(ctx: any) {
     });
     ctx.status = 200;
     ctx.body = {
-      message: 'No order details in masterdata with plural order id : ' + body.plural_order_id,
+      message: 'No order details in masterdata with plural order id : ' + pluralOrderId,
       data: orderdetails.data,
     };
     return;
@@ -131,25 +133,54 @@ export async function updatePaymentStatus(ctx: any) {
   });
 
   let paymentDetails: any = {};
-  if (body.error_code === '4010') {
-    paymentDetails = await getPluralPaymentByOrderId(body.plural_order_id, keys);
+  if (body.payment_id && body.error_code !== '4010') {
+    paymentDetails = await getPluralPaymentById(pluralOrderId, body.payment_id, keys);
   } else {
-    paymentDetails = await getPluralPaymentById(body.plural_order_id, body.payment_id, keys);
+    paymentDetails = await getPluralPaymentByOrderId(pluralOrderId, keys);
   }
   addLog(ctx, {
     orderId: orderdetails.data[0]?.vtexOrderId,
     email: orderdetails.data[0]?.email ?? null,
     message:
       'updatePaymentStatus: Getting Plural payment details. pluralOrderId - ' +
-      body.plural_order_id +
+      pluralOrderId +
       ' , pluralPaymentId - ' +
       body.payment_id,
     body: JSON.stringify({ result: paymentDetails }),
   });
 
+  // Handle Plural API error - keep payment pending for webhook
+  if (paymentDetails.isError) {
+    console.log('🔴 PLURAL API ERROR HANDLED - Keeping payment pending for webhook');
+    console.log({ pluralOrderId, error: paymentDetails.data });
+    
+    addLog(ctx, {
+      orderId: orderdetails.data[0]?.vtexOrderId,
+      email: orderdetails.data[0]?.email ?? null,
+      message: '🔴 PLURAL API ERROR - Payment kept pending for webhook processing',
+      body: JSON.stringify({ error: paymentDetails.data, pluralOrderId }),
+    });
+
+    ctx.status = 200;
+    ctx.body = {
+      status: 'undefined',
+      paymentId: orderdetails.data[0].vtexPaymentId,
+      message: paymentDetails.data?.error_message || 'Plural API error',
+    };
+    return;
+  } else {
+    console.log('✅ PLURAL API SUCCESS - Payment details retrieved');
+    console.log({ 
+      pluralOrderId: pluralOrderId,
+      orderStatus: paymentDetails.data?.status,
+      paymentDetails: paymentDetails.data?.payments?.[0],
+      fullData: paymentDetails.data 
+    });
+  }
+
   if (
     body.payment_id &&
-    paymentDetails.data.order_data.order_status !== constants.PLURAL.STATUS.ORDER_ATTEMPTED
+    paymentDetails.data.status !== constants.PLURAL.STATUS.ORDER_ATTEMPTED
   ) {
     if (
       !orderdetails.data ||
@@ -162,7 +193,7 @@ export async function updatePaymentStatus(ctx: any) {
       newValues.push({ field: 'status', value: true });
       newValues.push({
         field: 'pinelabsPaymentStatus',
-        value: paymentDetails.data.payment_info_data?.payment_status ?? '',
+        value: paymentDetails.data.payments?.[0]?.status ?? paymentDetails.data.status ?? '',
       });
       if (body.payment_id) {
         newValues.push({
@@ -199,9 +230,9 @@ export async function updatePaymentStatus(ctx: any) {
       }
     }
   }
-  if (!paymentDetails.isError && !orderdetails.data[0].status) {
+  if (!orderdetails.data[0].status) {
     vtexStatusUpdateResponse = await updateVtexPaymentStatus(
-      paymentDetails.data.order_data.order_status,
+      paymentDetails.data.status,
       orderdetails.data[0].vtexPaymentId,
       body.callbackUrl,
       authToken,
