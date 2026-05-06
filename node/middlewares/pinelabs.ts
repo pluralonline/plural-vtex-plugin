@@ -273,70 +273,84 @@ export async function getPluralPayments(
   };
 }
 
-// Common internal function to fetch order details
+// Common internal function to fetch order details with retry
 async function getPluralOrderDetails(
   pluralOrderId: string,
   keys: any
 ) {
   const baseUrl = keys.baseUrl ?? constants.PLURAL.BASE_URL_PROD;
+  const maxRetries = 2;
   
-  try {
-    // 1. First get the access token
-    const tokenResponse = await getAccessTokenPinelabs(
-      baseUrl,
-      keys.accessCode, 
-      keys.secretCode
-    );
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      // 1. First get the access token
+      const tokenResponse = await getAccessTokenPinelabs(
+        baseUrl,
+        keys.accessCode, 
+        keys.secretCode
+      );
 
-    if (tokenResponse.isError) {
-      console.error('Token generation failed:', tokenResponse.data);
-      throw new Error(`Token generation failed: ${JSON.stringify(tokenResponse.data)}`);
-    }
-
-    const accessToken = tokenResponse.data.access_token;
-    if (!accessToken) {
-      throw new Error('Access token not returned in response');
-    }
-
-    // 2. Make the API request with the fresh token
-    const response = await axios.get(`${baseUrl}/api/pay/v1/orders/${pluralOrderId}`, {
-      headers: {
-        'Authorization': `Bearer ${accessToken}`,
-        'Content-Type': 'application/json'
-      },
-      timeout: 15000
-    });
-
-    if (!response.data?.data) {
-      throw new Error('Invalid response structure - missing data');
-    }
-
-    console.log("Pinelabs Order Details - Response ->", response.data);
-    return {
-      isError: false,
-      data: response.data.data
-    };
-  } catch (error) {
-    const errorDetails = {
-      message: error.message,
-      code: error.response?.status,
-      data: error.response?.data,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
-    };
-
-    console.error("Pinelabs Order Details Error:", {
-      pluralOrderId,
-      error: errorDetails
-    });
-
-    return {
-      isError: true,
-      data: error.response?.data || {
-        error_code: "API_ERROR",
-        error_message: error.message,
-        details: errorDetails
+      if (tokenResponse.isError) {
+        console.error(`Token generation failed (attempt ${attempt}/${maxRetries}):`, tokenResponse.data);
+        if (attempt < maxRetries) {
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          continue;
+        }
+        throw new Error(`Token generation failed: ${JSON.stringify(tokenResponse.data)}`);
       }
-    };
+
+      const accessToken = tokenResponse.data.access_token;
+      if (!accessToken) {
+        throw new Error('Access token not returned in response');
+      }
+
+      // 2. Make the API request with the fresh token
+      const response = await axios.get(`${baseUrl}/api/pay/v1/orders/${pluralOrderId}`, {
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json'
+        },
+        timeout: 30000
+      });
+
+      if (!response.data?.data) {
+        throw new Error('Invalid response structure - missing data');
+      }
+
+      console.log("Pinelabs Order Details - Response ->", response.data);
+      return {
+        isError: false,
+        data: response.data.data
+      };
+    } catch (error) {
+      const errorDetails = {
+        message: error.message,
+        code: error.response?.status,
+        data: error.response?.data,
+        attempt: attempt,
+        stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      };
+
+      console.error(`Pinelabs Order Details Error (attempt ${attempt}/${maxRetries}):`, {
+        pluralOrderId,
+        error: errorDetails
+      });
+
+      // If not last attempt and it's a network error, retry
+      if (attempt < maxRetries && !error.response?.status) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        continue;
+      }
+
+      return {
+        isError: true,
+        data: error.response?.data || {
+          error_code: "API_ERROR",
+          error_message: error.message,
+          details: errorDetails
+        }
+      };
+    }
   }
 }
 
