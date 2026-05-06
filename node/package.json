@@ -12,7 +12,7 @@
     "@types/jest": "^24.0.18",
     "@types/node": "^12.0.0",
     "@types/ramda": "types/npm-ramda#dist",
-    "@vtex/api": "6.45.15",
+    "@vtex/api": "6.50.1",
     "typescript": "3.9.7",
     "vtex.payment-provider-example": "http://vtex.vtexassets.com/_v/public/typings/v1/vtex.payment-provider-example@1.0.2/public/_types/react"
   },
@@ -21,6 +21,7 @@
   },
   "version": "1.2.0",
   "resolutions": {
-    "@types/express-serve-static-core": "4.17.18"
+    "@types/express-serve-static-core": "4.17.18",
+    "@opentelemetry/api": "1.2.0"
   }
 }

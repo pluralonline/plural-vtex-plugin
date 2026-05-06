@@ -277,7 +277,7 @@ export async function getPluralPayments(
 async function getPluralOrderDetails(
   pluralOrderId: string,
   keys: any
-) {
+): Promise<{ isError: boolean; data: any }> {
   const baseUrl = keys.baseUrl ?? constants.PLURAL.BASE_URL_PROD;
   
   try {
@@ -299,6 +299,7 @@ async function getPluralOrderDetails(
     }
 
     // 2. Make the API request with the fresh token
+
     const response = await axios.get(`${baseUrl}/api/pay/v1/orders/${pluralOrderId}`, {
       headers: {
         'Authorization': `Bearer ${accessToken}`,

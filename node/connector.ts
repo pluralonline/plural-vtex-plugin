@@ -120,6 +120,36 @@ export default class PineLabs extends PaymentProvider<Clients> {
           )}`,
           body: JSON.stringify(pluralOrderStatus),
         });
+
+        // Check if this is a transient network/TLS error vs an actual payment failure
+        const errorMessage = JSON.stringify(pluralOrderStatus.data?.error_message ?? '').toLowerCase();
+        const errorCode = (pluralOrderStatus.data?.error_code ?? '').toString().toLowerCase();
+        const isNetworkError =
+          errorCode === 'api_error' ||
+          errorMessage.includes('socket disconnected') ||
+          errorMessage.includes('tls') ||
+          errorMessage.includes('econnrefused') ||
+          errorMessage.includes('econnreset') ||
+          errorMessage.includes('etimedout') ||
+          errorMessage.includes('timeout') ||
+          errorMessage.includes('network') ||
+          errorMessage.includes('enotfound') ||
+          errorMessage.includes('token generation failed') ||
+          errorMessage.includes('api_error');
+
+        if (isNetworkError) {
+          addLog(this.context, {
+            orderId: authorization.orderId,
+            email: authorization.miniCart.buyer.email ?? null,
+            message: `authorize: Transient network error detected for OrderID ${pluralOrderId}. Returning pending instead of deny.`,
+            body: JSON.stringify(pluralOrderStatus),
+          });
+          return Authorizations.pending(authorization, {
+            delayToCancel: 864000,
+            authorizationId: randomString(),
+          });
+        }
+
         return Authorizations.deny(authorization, {
           message: getPluralErrorMessage(pluralOrderStatus.data?.error_message),
           code: '500',
