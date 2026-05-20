@@ -1,7 +1,7 @@
 {
   "name": "connector-pinelabs",
   "vendor": "vtexasia",
-  "version": "1.0.45",
+  "version": "1.0.46",
   "title": "Pinelabs Payment Connector",
   "description": "Payment gateway connector using the pinelabs",
   "builders": {
@@ -145,8 +145,6 @@
     },
     "free": true,
     "type": "free",
-    "availableCountries": [
-      "*"
-    ]
+    "availableCountries": ["*"]
   }
 }
